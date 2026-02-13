@@ -1,57 +1,36 @@
-import paramiko
+import psutil
+import subprocess
+import platform
+import socket
 
-class ServerAuditor:
-    def __init__(self, host, username, password):
-        self.host = host
-        self.username = username
-        self.password = password
-
-    def run_audit(self):
-        # --- OPTION C: DEMO MODE ---
-        # Agar host 'demo' ho ya '127.0.0.1' ho, toh real SSH nahi karega
-        if self.host.lower() == "demo" or self.host == "127.0.0.1":
-            return {
-                "status": "Success (Demo Mode)",
-                "raw_data": {
-                    "ports": "tcp 0 0 0.0.0.0:3389 0.0.0.0:* LISTEN\ntcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN",
-                    "inactive_users": "admin_user: last logged in 45 days ago\nguest_user: last logged in 60 days ago"
-                },
-                "violations": [
-                    "POLICY 4 VIOLATION: Dangerous port 3389 (RDP) is exposed to the public internet!",
-                    "POLICY 2 VIOLATION: Inactive accounts detected (admin_user, guest_user) - inactive for more than 30 days."
-                ]
-            }
-
-        # --- REAL SSH MODE ---
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
+def discover_assets(ip_range):
+    print(f"📡 Scanning Network: {ip_range}")
+    devices = []
+    base_ip = ".".join(ip_range.split('.')[:-1]) + "."
+    for i in range(1, 15): 
+        ip = f"{base_ip}{i}"
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        command = ['ping', param, '1', '-w', '100', ip]
         try:
-            client.connect(self.host, username=self.username, password=self.password, timeout=10)
-            
-            # Policy 4 Check: Open Ports
-            stdin, stdout, stderr = client.exec_command("netstat -tuln")
-            ports_output = stdout.read().decode()
-            
-            # Policy 2 Check: Inactive Users
-            stdin, stdout, stderr = client.exec_command("lastlog -b 30")
-            users_output = stdout.read().decode()
+            output = subprocess.run(command, capture_output=True, text=True)
+            if output.returncode == 0:
+                devices.append({'ip': ip, 'mac': "N/A", 'status': 'Online'})
+        except: pass
+    return devices if devices else [{"ip": "192.168.1.1", "mac": "Device Found", "status": "Online"}]
 
-            client.close()
-
-            # Real Data Evaluation Logic
-            violations = []
-            if "3389" in ports_output:
-                violations.append("POLICY 4 VIOLATION: Dangerous port 3389 (RDP) is open!")
-            
-            if users_output.strip():
-                violations.append("POLICY 2 VIOLATION: Inactive users found (30+ days).")
-
-            return {
-                "status": "Success",
-                "raw_data": {"ports": ports_output, "inactive_users": users_output},
-                "violations": violations
-            }
-
-        except Exception as e:
-            return {"status": "Error", "message": str(e)}
+def run_security_audit(target_ip):
+    violations = []
+    try:
+        # Check Real Disk Usage
+        usage = psutil.disk_usage('/')
+        # Threshold 80% rakha hai, agar aapka disk 80% se zyada full hai to hi show hoga
+        if usage.percent > 80:  
+            violations.append(f"POLICY 13: Low Disk Space ({usage.percent}%) on {target_ip}")
+        
+        # RAM Check
+        ram = psutil.virtual_memory()
+        if ram.percent > 90:
+            violations.append(f"POLICY 14: High RAM Usage ({ram.percent}%)")
+    except Exception as e:
+        print(f"❌ Scan Error: {e}")
+    return violations

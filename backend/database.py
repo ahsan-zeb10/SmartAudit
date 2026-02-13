@@ -1,73 +1,33 @@
-import psycopg2
-from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import datetime
 
-DB_CONFIG = {
-    "dbname": "smartaudit_db",  # pgAdmin mein jo DB banaya tha
-    "user": "postgres",        # Default user
-    "password": "ahsan.123",  # Apna PostgreSQL password yahan likhein
-    "host": "localhost",
-    "port": "5432"
-}
+DATABASE_URL = "postgresql://postgres:ahsan.123@localhost:5432/smartaudit_db"
 
-def get_connection():
-    """PostgreSQL se connection banata hai"""
-    return psycopg2.connect(**DB_CONFIG)
+Base = declarative_base()
+
+class Asset(Base):
+    __tablename__ = "assets"
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String, unique=True)
+    mac_address = Column(String)
+    hostname = Column(String)
+    status = Column(String)
+    last_seen = Column(DateTime, default=datetime.datetime.utcnow)
+
+class Violation(Base):
+    __tablename__ = "violations"
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"))
+    policy_name = Column(String)
+    details = Column(Text)
+    ai_remediation = Column(Text)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
-    """Tables create karne wala function (main.py startup pe call karega)"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Table 1: Servers List (Assets)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS servers (
-                id SERIAL PRIMARY KEY,
-                host TEXT UNIQUE NOT NULL,
-                last_scan TIMESTAMP
-            );
-        ''')
-        
-        # Table 2: Audit Logs (Smart Insights)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id SERIAL PRIMARY KEY,
-                server_host TEXT REFERENCES servers(host),
-                scan_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                violations_count INTEGER,
-                ai_analysis TEXT
-            );
-        ''')
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        print("✅ Smart Audit Database Initialized Successfully!")
-    except Exception as e:
-        print(f"❌ Database Initialization Error: {e}")
-
-def save_audit_result(host, violations, ai_text):
-    """Scan ka data save karne wala function"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # 1. Server ka 'last_scan' update ya insert karein
-        cursor.execute('''
-            INSERT INTO servers (host, last_scan) 
-            VALUES (%s, %s) 
-            ON CONFLICT (host) DO UPDATE SET last_scan = EXCLUDED.last_scan
-        ''', (host, datetime.now()))
-        
-        # 2. Audit history save karein
-        cursor.execute('''
-            INSERT INTO audit_logs (server_host, scan_date, violations_count, ai_analysis)
-            VALUES (%s, %s, %s, %s)
-        ''', (host, datetime.now(), len(violations), ai_text))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        print(f"💾 Audit for {host} saved to database.")
-    except Exception as e:
-        print(f"❌ Database Save Error: {e}")
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database Tables Initialized in smartaudit_db")

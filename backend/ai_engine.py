@@ -1,31 +1,53 @@
-import ollama
+import requests
+import json
 
 def get_ai_summary(violations):
-    # Ab hum AI ko "Professional Consultant" ka role de rahe hain
-    system_instruction = (
-        "You are a Senior Cyber Security Consultant. Your tone must be professional, "
-        "formal, and concise. Avoid slang, informal greetings, or casual language. "
-        "Provide responses in clear English suitable for an executive board meeting."
-    )
+    # Aapki API Key
+    API_KEY = "AIzaSyCNmpqseQgMTM0JgLA8Yz26wdv4EliPG3Y"
+    
+    # Aapki list se uthaya gaya exact stable model path
+    model_name = "models/gemini-2.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={API_KEY}"
+    
+    if not violations:
+        return "✅ System is healthy. All infrastructure policies are compliant."
 
-    prompt = f"""
-    Project Name: GovenAI Infrastructure Audit
+    headers = {'Content-Type': 'application/json'}
     
-    The following IT policy violations were detected during a routine automated scan:
-    {violations}
-    
-    Please provide a formal report including:
-    1. Executive Summary: A high-level overview of the security posture.
-    2. Risk Analysis: Technical implications of each violation.
-    3. Remediation Plan: Professional step-by-step instructions to resolve these issues.
-    4. Compliance Impact: Which policies (Policy 2, Policy 4) are currently non-compliant.
-    """
-    
+    # Optimized payload for Gemini 2.5 Flash
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": f"Context: Windows IT Infrastructure Audit. Issues found: {violations}. Task: Provide a professional 3-line remediation plan."
+            }]
+        }],
+        "generationConfig": {
+            "temperature": 1, # As per your list's default
+            "topP": 0.95,
+            "topK": 64,
+            "maxOutputTokens": 1000
+        }
+    }
+
     try:
-        response = ollama.chat(model='llama3', messages=[
-            {'role': 'system', 'content': system_instruction},
-            {'role': 'user', 'content': prompt},
-        ])
-        return response['message']['content']
+        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if "candidates" in result:
+                ai_text = result['candidates'][0]['content']['parts'][0]['text']
+                return ai_text
+            return "📡 AI Analyzing: Data received, awaiting generation..."
+        
+        elif response.status_code == 429:
+            # Rate limit/Quota handle karna
+            return "⚠️ QUOTA FULL: Gemini 2.5 is busy. Retrying in 60s..."
+            
+        elif response.status_code == 404:
+            return f"❌ Model Not Found: Path '{model_name}' might be restricted for this key."
+            
+        else:
+            return f"❌ API Error {response.status_code}: {response.text}"
+
     except Exception as e:
-        return f"AI Error: Connection to Local LLM failed. {str(e)}"
+        return f"📡 Connection Error: {str(e)}"

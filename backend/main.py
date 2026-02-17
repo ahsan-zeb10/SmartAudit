@@ -5,15 +5,15 @@ import asyncio
 import uvicorn
 import os
 import subprocess
+import shutil
 
 # Project Imports
 from scanner import run_security_audit, discover_assets
 from ai_engine import get_ai_summary
-from database import init_db, SessionLocal, Asset, Violation
-from report_gen import generate_pdf_report
-from vuln_scanner import scan_vulnerabilities
+from database import init_db, SessionLocal
+from report_gen import generate_pdf_report  # ← Ensure yeh file exist karti hai
 
-app = FastAPI(title="Premise Unified IT Infrastructure Platform")
+app = FastAPI(title="TECHIFY Infrastructure Platform")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,12 +23,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Global State ---
+# Global State
 LATEST_REPORT = {
     "host": "127.0.0.1",
-    "status": "Idle",
     "violations": [],
-    "ai_analysis": "Waiting for scan...",
+    "ai_analysis": "System ready...",
     "assets": [],
     "compliance_score": 100
 }
@@ -38,41 +37,47 @@ update_event = asyncio.Event()
 
 async def perform_audit():
     global LATEST_REPORT
-    db = SessionLocal()
     try:
         host = CURRENT_TARGET["host"]
         print(f"🔍 Starting Deep Audit: {host}")
-        
-        health_issues = run_security_audit(host)
-        vuln_found = scan_vulnerabilities(host)
-        
-        vuln_descriptions = [f"VULN: Port {v['port']} ({v['service']}) - {v['issue']} [{v['severity']}]" for v in vuln_found]
-        all_violations = health_issues + vuln_descriptions
-        
-        # Compliance Score Calculation
+
+        violations = run_security_audit(host)
+
+        # --- Corrected Indentation Starts Here ---
         score = 100
-        for v in all_violations:
-            v_upper = v.upper()
-            if "CRITICAL" in v_upper or "445" in v_upper: score -= 40
-            elif "HIGH" in v_upper or "LOW DISK" in v_upper: score -= 25
-            elif "LOW" in v_upper or "22" in v_upper: score -= 10
-            else: score -= 5
+        critical_count = 0
+        high_count = 0
         
-        score = max(0, score)
-        ai_text = get_ai_summary(all_violations) if all_violations else "System Fully Compliant."
-        
+        for v in violations:
+            sev = v.get('severity', 'Low')
+            if sev == "Critical":
+                critical_count += 1
+                score -= 25  # Kam cut Critical ke liye
+            elif sev == "High": 
+                score -= 15
+            elif sev == "Medium": 
+                score -= 8
+            else: 
+                score -= 4
+
+        # Bonus: Agar Critical > 0 toh extra penalty
+        if critical_count > 0:
+            score -= 10 * critical_count  # Multiple Critical pe heavy hit
+
+        score = max(10, score)  # Minimum 10%
+        # --- Corrected Indentation Ends Here ---
+
+        ai_text = get_ai_summary(violations)
+
         LATEST_REPORT.update({
             "host": host,
-            "status": "Active",
-            "violations": all_violations,
+            "violations": violations,
             "ai_analysis": ai_text,
             "compliance_score": int(score)
         })
-        print(f"✅ Audit Sync Complete. Score: {score}%")
+        print(f"✅ Audit Complete → {len(violations)} violations | Score: {score}%")
     except Exception as e:
-        print(f"❌ Error during audit: {e}")
-    finally:
-        db.close()
+        print(f"❌ Audit Error: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -100,57 +105,61 @@ async def start_scan(data: dict, background_tasks: BackgroundTasks):
     background_tasks.add_task(perform_audit)
     return {"message": "Audit Triggered"}
 
-# --- UPDATED REMEDIATION ENDPOINT (Real Logic) ---
 @app.post("/remediate")
 async def remediate_issue(data: dict, background_tasks: BackgroundTasks):
-    violation_text = data.get("violation", "").upper()
-    host = data.get("host", "127.0.0.1")
-    actions_taken = []
+    violation = data.get("violation", {})
+    host = data.get("host", LATEST_REPORT.get("host", "127.0.0.1"))
+    title = violation.get("title", "").upper() if isinstance(violation, dict) else ""
+    id_val = violation.get("id", "") if isinstance(violation, dict) else ""
+    port = violation.get("port") if isinstance(violation, dict) else None
+    actions = []
+    is_local = host in ["127.0.0.1", "localhost", "::1"]
 
     try:
-        # 1. Real Disk Cleanup
-        if "LOW DISK" in violation_text:
-            if os.name == 'nt':
-                subprocess.run("del /q/f/s %TEMP%\\*", shell=True, capture_output=True)
-                actions_taken.append("Windows Temp files cleared")
-            else:
-                subprocess.run("rm -rf /tmp/*", shell=True, capture_output=True)
-                actions_taken.append("/tmp directory cleaned")
+        if is_local:
+            if "DISK" in title or "POLICY-13-DISK" in id_val:
+                temp_dir = os.path.expandvars(r'%TEMP%')
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                os.makedirs(temp_dir, exist_ok=True)
+                actions.append("Temp cleared")
 
-        # 2. Real Firewall Block (Port 445 / SMB)
-        if "445" in violation_text or "SMB" in violation_text:
-            if os.name == 'nt':
-                subprocess.run('netsh advfirewall firewall delete rule name="PREMISE_BLOCK_445"', shell=True, capture_output=True)
-                cmd = 'netsh advfirewall firewall add rule name="PREMISE_BLOCK_445" protocol=TCP localport=445 action=block dir=IN'
-                subprocess.run(cmd, shell=True, check=True)
-                actions_taken.append("Port 445 (SMB) blocked")
-            else:
-                subprocess.run("iptables -A INPUT -p tcp --dport 445 -j DROP", shell=True, check=True)
-                actions_taken.append("Port 445 blocked via iptables")
+                subprocess.run('powershell -Command "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"', shell=True)
+                actions.append("Recycle Bin emptied")
 
-        # 3. Real Firewall Block (Port 22 / SSH)
-        if "22" in violation_text or "SSH" in violation_text:
-            if os.name == 'nt':
-                subprocess.run('netsh advfirewall firewall delete rule name="PREMISE_BLOCK_22"', shell=True, capture_output=True)
-                cmd = 'netsh advfirewall firewall add rule name="PREMISE_BLOCK_22" protocol=TCP localport=22 action=block dir=IN'
-                subprocess.run(cmd, shell=True, check=True)
-                actions_taken.append("Port 22 (SSH) blocked")
-            else:
-                subprocess.run("iptables -A INPUT -p tcp --dport 22 -j DROP", shell=True, check=True)
-                actions_taken.append("Port 22 blocked via iptables")
+            if port:
+                rule_name = f"TECHIFY_BLOCK_{port}"
+                subprocess.run(f'netsh advfirewall firewall delete rule name="{rule_name}"', shell=True)
+                subprocess.run(f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block protocol=TCP localport={port}', shell=True)
+                actions.append(f"Port {port} blocked")
 
-        if not actions_taken:
-            msg = "SUCCESS: Policy applied (Standard Hardening)"
+                if port == 445:
+                    subprocess.run('powershell -Command "Stop-Service -Name LanmanServer -Force"', shell=True)
+                    actions.append("SMB stopped")
+                elif port == 22:
+                    subprocess.run('powershell -Command "Stop-Service -Name sshd -Force"', shell=True)
+                    actions.append("SSH stopped")
+                elif port == 5432:
+                    subprocess.run('powershell -Command "Stop-Service -Name postgresql* -Force"', shell=True)
+                    actions.append("PostgreSQL stopped")
+
+            if actions:
+                msg = f"SUCCESS (Local): {', '.join(actions)}. Re-scan."
+            else:
+                msg = "No auto fix (local)"
         else:
-            msg = f"SUCCESS: {', '.join(actions_taken)}"
+            suggestions = []
+            if port:
+                suggestions.append(f"netsh advfirewall firewall add rule name=\"BLOCK_{port}\" dir=in action=block protocol=TCP localport={port}")
+            if "DISK" in title:
+                suggestions.append("Manual cleanup temp/recycle bin on remote")
+            msg = f"REMOTE HOST: Manual fix needed → Commands: {'; '.join(suggestions)}"
 
     except Exception as e:
-        msg = f"FAILED: {str(e)} (Ensure you run as Administrator)"
+        msg = f"FAILED: Run as Administrator → {str(e)[:50]}"
 
-    # Refresh scan to update dashboard
     update_event.set()
     background_tasks.add_task(perform_audit)
-    return {"status": "success", "message": msg}
+    return {"message": msg}
 
 @app.post("/discover")
 async def start_discovery(data: dict):
@@ -160,7 +169,11 @@ async def start_discovery(data: dict):
 
 @app.get("/download-report")
 async def download_report():
-    return FileResponse(generate_pdf_report(), media_type='application/pdf', filename="Compliance_Report.pdf")
+    try:
+        filename = generate_pdf_report(LATEST_REPORT)
+        return FileResponse(filename, media_type='application/pdf', filename="TECHIFY_Compliance_Report.pdf")
+    except Exception as e:
+        return {"error": f"Report generation failed: {str(e)}"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

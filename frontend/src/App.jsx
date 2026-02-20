@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Shield, AlertTriangle, Activity, Search, FileText, Network, RefreshCcw, Zap, Monitor, BarChart3, CheckCircle, XCircle, Download } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -7,14 +7,10 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
-
-  const [results, setResults] = useState({
-    host: '127.0.0.1',
-    violations: [],
-    ai_analysis: "System ready...",
-    assets: [],
-    compliance_score: 100
-  });
+  const [allDevicesResults, setAllDevicesResults] = useState({});
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const [newDevices, setNewDevices] = useState([]);
+  const [liveStats, setLiveStats] = useState(null);
 
   const [form, setForm] = useState({ host: '127.0.0.1' });
   const [networkRange, setNetworkRange] = useState("192.168.1.1/24");
@@ -23,12 +19,13 @@ function App() {
   const handleScan = async (e) => {
     if (e) e.preventDefault();
     setLoading(true);
-    setLastNotification("Deep Audit Started...");
+    setLastNotification("Deep Audit Triggered...");
 
     try {
       await axios.post('http://127.0.0.1:8000/scan', form);
       const update = await axios.get('http://127.0.0.1:8000/latest-audit');
-      setResults(update.data);
+      setAllDevicesResults(prev => ({ ...prev, [form.host]: update.data }));
+      setSelectedDevice(form.host);
     } catch (err) {
       setLastNotification("Scan Failed");
     }
@@ -37,12 +34,21 @@ function App() {
 
   const handleDiscovery = async () => {
     setDiscoveryLoading(true);
-    setLastNotification("Network Discovery...");
+    setLastNotification("Analyzing Network Infrastructure...");
 
     try {
       const res = await axios.post('http://127.0.0.1:8000/discover', { range: networkRange });
-      setResults(prev => ({ ...prev, assets: res.data.devices || [] }));
-      setLastNotification(`Found ${res.data.devices?.length || 0} Devices`);
+      setAllDevicesResults(res.data.all_results || {});
+      setNewDevices(res.data.new_devices || []);
+
+      if (res.data.new_devices?.length > 0) {
+        setLastNotification(`⚠️ ALERT: ${res.data.new_devices.length} Rogue Devices!`);
+      } else {
+        setLastNotification(`Audited ${Object.keys(res.data.all_results || {}).length} Devices`);
+      }
+
+      const first = Object.keys(res.data.all_results || {})[0];
+      if (first) setSelectedDevice(first);
     } catch (err) {
       setLastNotification("Discovery Failed");
     }
@@ -50,253 +56,321 @@ function App() {
   };
 
   const handleRemediate = async (violation) => {
-    setLastNotification("Applying Fix...");
+    setLastNotification("Executing Remediation Policy...");
     try {
-      const res = await axios.post('http://127.0.0.1:8000/remediate', {
-        violation: violation,
-        host: results.host
-      });
+      const res = await axios.post('http://127.0.0.1:8000/remediate', { violation, host: selectedDevice });
       alert(res.data.message);
       const update = await axios.get('http://127.0.0.1:8000/latest-audit');
-      setResults(update.data);
+      setAllDevicesResults(prev => ({ ...prev, [selectedDevice]: update.data }));
     } catch (err) {
-      alert("Fix Failed");
+      alert("Remediation Failed");
     }
   };
 
-  // Download Report Button
+  // PDF Download - Yeh sahi PDF download karega (report_gen.py se)
   const handleDownloadReport = async () => {
+    if (!selectedDevice) {
+      alert("Please select a device first");
+      return;
+    }
     setReportLoading(true);
     try {
+      // Important: host parameter bhej rahe hain taake backend sahi report generate kare
       const response = await axios.get('http://127.0.0.1:8000/download-report', {
+        params: { host: selectedDevice },
         responseType: 'blob'
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'TECHIFY_Compliance_Report.pdf');
+      link.setAttribute('download', `TECHIFY_Smart_Audit_${selectedDevice}.pdf`);
       document.body.appendChild(link);
       link.click();
-      link.parentNode.removeChild(link);
-      setLastNotification("Report Downloaded");
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      setLastNotification("TECHIFY Smart Audit Report Downloaded");
     } catch (err) {
-      alert("Report Generation Failed");
+      console.error("Report download failed:", err);
+      alert("Report Generation Failed - Check if device is audited");
     }
     setReportLoading(false);
   };
 
-  // Chart Data (direct severity use)
-  const getChartData = () => {
+  useEffect(() => {
+    if (selectedDevice !== "127.0.0.1") {
+      setLiveStats(null);
+      return;
+    }
+    const fetchStats = async () => {
+      try {
+        const res = await axios.get(`http://127.0.0.1:8000/live-stats/${selectedDevice}`);
+        setLiveStats(res.data);
+      } catch (e) {
+        console.log("Live stats fetch failed");
+      }
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 5000);
+    return () => clearInterval(interval);
+  }, [selectedDevice]);
+
+  const getChartData = (violations = []) => {
     const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
-
-    results.violations.forEach(v => {
-      const sev = (v.severity || "Low").toUpperCase();
-      if (sev === "CRITICAL") counts.Critical++;
-      else if (sev === "HIGH") counts.High++;
-      else if (sev === "MEDIUM") counts.Medium++;
-      else counts.Low++;
+    violations.forEach(v => {
+      const sev = v.severity || "Low";
+      counts[sev] = (counts[sev] || 0) + 1;
     });
-
     return [
       { name: 'Critical', count: counts.Critical, color: '#ef4444' },
-      { name: 'High',     count: counts.High,     color: '#f97316' },
-      { name: 'Medium',   count: counts.Medium,   color: '#eab308' },
-      { name: 'Low',      count: counts.Low,      color: '#22c55e' }
+      { name: 'High', count: counts.High, color: '#f97316' },
+      { name: 'Medium', count: counts.Medium, color: '#eab308' },
+      { name: 'Low', count: counts.Low, color: '#22c55e' }
     ];
   };
 
-  const chartData = getChartData();
-
-  const getSeverityStyle = (severity) => {
-    const s = (severity || "Low").toUpperCase();
-    if (s === "CRITICAL") return "text-red-500 border-red-900/50 bg-red-950/30";
-    if (s === "HIGH")     return "text-orange-500 border-orange-900/50 bg-orange-950/30";
-    if (s === "MEDIUM")   return "text-yellow-500 border-yellow-900/50 bg-yellow-950/30";
-    return "text-emerald-500 border-emerald-900/50 bg-emerald-950/30";
-  };
-
-  const getSeverityIcon = (severity) => {
-    if ((severity || "").toUpperCase() === "CRITICAL") return <XCircle size={22} className="text-red-500" />;
-    return <AlertTriangle size={22} className="text-orange-500" />;
-  };
+  const selectedReport = allDevicesResults[selectedDevice];
 
   return (
-    <div className="min-h-screen bg-[#030712] text-slate-100 p-4 md:p-8 font-sans">
-      {/* Header */}
-      <div className="max-w-6xl mx-auto flex justify-between items-center mb-10 border-b border-slate-800 pb-6">
-        <div className="flex items-center gap-3">
-          <div className="bg-cyan-500 p-2 rounded-lg"><Shield size={32} className="text-black" /></div>
+    <div className="min-h-screen bg-[#020617] text-slate-100 p-6 md:p-10 font-sans">
+      {/* Header Section */}
+      <div className="max-w-7xl mx-auto flex justify-between items-center mb-10 border-b border-slate-800 pb-8">
+        <div className="flex items-center gap-4">
+          <div className="bg-cyan-500 p-3 rounded-2xl shadow-[0_0_20px_rgba(6,182,212,0.5)]">
+            <Shield size={32} className="text-black" />
+          </div>
           <div>
-            <h1 className="text-2xl font-black uppercase tracking-tighter">TECHIFY <span className="text-cyan-500">SOLUTIONS</span></h1>
-            <p className="text-[10px] font-bold text-slate-500 tracking-[0.3em]">INFRASTRUCTURE V2.0</p>
+            <h1 className="text-3xl font-black tracking-tighter italic">
+              TECHIFY <span className="text-cyan-500">SMART AUDIT</span>
+            </h1>
+            <p className="text-[10px] font-bold text-slate-500 tracking-[0.4em] uppercase">
+              Security Operations Center
+            </p>
           </div>
         </div>
-
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-6">
           {lastNotification && (
-            <div className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-6 py-2 rounded-full text-xs font-bold animate-pulse">
+            <div className="text-cyan-400 text-xs font-black animate-pulse px-4 py-2 bg-cyan-500/10 rounded-full border border-cyan-500/20">
               {lastNotification}
             </div>
           )}
+          {/* Yeh button ab PDF download karega */}
           <button
             onClick={handleDownloadReport}
-            disabled={reportLoading}
-            className="bg-purple-600 hover:bg-purple-500 px-6 py-3 rounded-xl font-bold flex items-center gap-2 uppercase text-xs tracking-widest transition-all"
+            disabled={reportLoading || !selectedDevice}
+            className={`bg-purple-600 hover:bg-purple-700 p-3 rounded-xl transition-all flex items-center gap-2 text-white font-black text-sm ${
+              reportLoading ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
           >
-            {reportLoading ? <RefreshCcw className="animate-spin" size={18} /> : <Download size={18} />}
-            DOWNLOAD REPORT
+            {reportLoading ? (
+              <RefreshCcw className="animate-spin" size={20} />
+            ) : (
+              <Download size={20} />
+            )}
+            GENERATE REPORT
           </button>
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Controls */}
+      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-8">
+        {/* Left Control Column */}
         <div className="space-y-6">
-          {/* Audit Engine */}
-          <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800">
-            <h2 className="text-sm font-black mb-6 flex items-center gap-2 text-cyan-500 uppercase tracking-widest">
-              <Zap size={18} /> Audit Engine
-            </h2>
-            <form onSubmit={handleScan} className="space-y-4">
-              <input
-                type="text"
-                value={form.host}
-                onChange={e => setForm({ ...form, host: e.target.value })}
-                className="w-full bg-slate-950 border border-slate-700 p-3 rounded-xl outline-none text-sm font-mono text-cyan-400"
-                placeholder="Enter IP Address (e.g., 192.168.1.50)"
-              />
-              <button
-                disabled={loading}
-                className="w-full bg-cyan-600 hover:bg-cyan-500 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all uppercase text-xs tracking-widest"
-              >
-                {loading ? <RefreshCcw className="animate-spin" size={18} /> : <Search size={18} />}
-                RUN DEEP AUDIT
-              </button>
-            </form>
+          <div className="bg-slate-900/40 p-6 rounded-[2rem] border border-slate-800">
+            <h3 className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <Zap size={14} /> Engine Control
+            </h3>
+            <input
+              type="text"
+              value={form.host}
+              onChange={e => setForm({...form, host: e.target.value})}
+              className="w-full bg-black/50 border border-slate-700 p-3 rounded-xl mb-4 text-sm font-mono focus:border-cyan-500 outline-none transition-all"
+            />
+            <button
+              onClick={handleScan}
+              className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-black text-[10px] tracking-[0.2em] flex justify-center items-center gap-2 transition-all shadow-lg shadow-cyan-900/20"
+            >
+              {loading ? <RefreshCcw className="animate-spin" size={16}/> : <Search size={16}/>} START AUDIT
+            </button>
           </div>
 
-          {/* Discovery */}
-          <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800">
-            <h2 className="text-sm font-black mb-6 flex items-center gap-2 text-purple-500 uppercase tracking-widest">
-              <Network size={18} /> Network Discovery
-            </h2>
+          <div className="bg-slate-900/40 p-6 rounded-[2rem] border border-slate-800">
+            <h3 className="text-[10px] font-black text-purple-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <Network size={14}/> Discovery Range
+            </h3>
             <input
               type="text"
               value={networkRange}
               onChange={e => setNetworkRange(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 p-3 rounded-xl outline-none text-sm font-mono text-purple-400 mb-4"
+              className="w-full bg-black/50 border border-slate-700 p-3 rounded-xl mb-4 text-sm font-mono focus:border-purple-500 outline-none transition-all"
             />
             <button
               onClick={handleDiscovery}
-              disabled={discoveryLoading}
-              className="w-full bg-purple-600 hover:bg-purple-700 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 uppercase text-xs tracking-widest"
+              className="w-full bg-purple-600 hover:bg-purple-500 py-4 rounded-xl font-black text-[10px] tracking-[0.2em] flex justify-center items-center gap-2 transition-all shadow-lg shadow-purple-900/20"
             >
-              {discoveryLoading ? <RefreshCcw className="animate-spin" size={18} /> : <Activity size={18} />}
-              DISCOVER DEVICES
+              {discoveryLoading ? <RefreshCcw className="animate-spin" size={16}/> : <Activity size={16}/>} SCAN NETWORK
             </button>
           </div>
 
-          {/* Online Devices */}
-          {results.assets.length > 0 && (
-            <div className="bg-slate-900/30 p-5 rounded-3xl border border-slate-800">
-              <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 flex items-center gap-2 tracking-widest">
-                <Monitor size={14} /> Online Devices
-              </h3>
-              <div className="max-h-48 overflow-y-auto space-y-2 pr-2 font-mono">
-                {results.assets.map((asset, idx) => (
+          <div className="bg-slate-900/20 p-6 rounded-[2rem] border border-slate-800">
+            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <Monitor size={14}/> Network Nodes
+            </h3>
+            <div className="space-y-3 max-h-80 overflow-y-auto pr-2 custom-scrollbar">
+              {Object.keys(allDevicesResults).map(ip => (
+                <div
+                  key={ip}
+                  onClick={() => setSelectedDevice(ip)}
+                  className={`p-4 rounded-2xl cursor-pointer border transition-all ${
+                    selectedDevice === ip
+                      ? 'bg-cyan-500/10 border-cyan-500 shadow-inner shadow-cyan-500/10'
+                      : 'bg-slate-900/50 border-slate-800 hover:border-slate-600'
+                  }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-mono font-bold">{ip}</span>
+                    <span className={`text-[10px] font-black ${allDevicesResults[ip].compliance_score > 70 ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {allDevicesResults[ip].compliance_score}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Content Column */}
+        <div className="lg:col-span-3 space-y-8">
+          {selectedReport ? (
+            <>
+              {/* Top Stats Bar */}
+              {liveStats && (
+                <div className="grid grid-cols-3 gap-6">
+                  {['CPU', 'RAM', 'DISK'].map((label) => (
+                    <div key={label} className="bg-slate-900/40 p-4 rounded-2xl border border-slate-800">
+                      <div className="flex justify-between text-[10px] font-black text-slate-500 mb-2 uppercase">
+                        <span>{label} Usage</span>
+                        <span>{liveStats[label.toLowerCase() + '_percent']}%</span>
+                      </div>
+                      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-1000 ${
+                            liveStats[label.toLowerCase() + '_percent'] > 80 ? 'bg-red-500' : 'bg-cyan-500'
+                          }`}
+                          style={{ width: `${liveStats[label.toLowerCase() + '_percent']}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Main Score & Chart */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 flex flex-col items-center justify-center relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-cyan-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Compliance Score</p>
+                  <h2 className={`text-7xl font-black ${selectedReport.compliance_score > 70 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {selectedReport.compliance_score}%
+                  </h2>
+                </div>
+
+                <div className="md:col-span-2 bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={getChartData(selectedReport.violations)}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 900, fill: '#64748b'}} />
+                      <Tooltip cursor={{fill: '#1e293b'}} contentStyle={{backgroundColor: '#0f172a', border: 'none', borderRadius: '12px'}} />
+                      <Bar dataKey="count" radius={[8, 8, 0, 0]}>
+                        {getChartData(selectedReport.violations).map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* AI Analysis */}
+              <div className="bg-gradient-to-r from-cyan-950/40 to-transparent p-8 rounded-[2rem] border-l-4 border-cyan-500">
+                <h4 className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <FileText size={14}/> Neural Analysis
+                </h4>
+                <p className="text-sm text-slate-300 italic leading-relaxed">"{selectedReport.ai_analysis}"</p>
+              </div>
+
+              {/* Violations List */}
+              <div className="space-y-4">
+                {selectedReport.violations.map((v, i) => (
                   <div
-                    key={idx}
-                    onClick={() => setForm({ host: asset.ip || asset })}
-                    className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-sm cursor-pointer hover:bg-slate-800 transition-all flex justify-between items-center"
+                    key={i}
+                    className="bg-slate-900/60 p-6 rounded-[1.5rem] border border-slate-800 flex flex-col md:flex-row justify-between items-center gap-4 group hover:bg-slate-800/60 transition-all"
                   >
-                    <span className="font-bold text-cyan-400">{asset.ip || asset}</span>
-                    <span className="text-emerald-500 text-xs">ONLINE</span>
+                    <div className="flex items-center gap-6">
+                      <div className={`p-3 rounded-xl ${v.severity === 'Critical' ? 'bg-red-500/20 text-red-500' : 'bg-orange-500/20 text-orange-500'}`}>
+                        {v.severity === 'Critical' ? <XCircle size={24}/> : <AlertTriangle size={24}/>}
+                      </div>
+                      <div>
+                        <h5 className="font-black text-sm text-slate-100">{v.title}</h5>
+                        <p className="text-xs text-slate-500 font-medium">{v.description}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleRemediate(v)}
+                      className="bg-white/5 hover:bg-cyan-500 hover:text-black px-6 py-3 rounded-xl text-[10px] font-black tracking-widest transition-all"
+                    >
+                      FIX NOW
+                    </button>
                   </div>
                 ))}
               </div>
+            </>
+          ) : (
+            <div className="h-96 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-[3rem]">
+              <Shield size={64} className="text-slate-800 mb-4 animate-pulse" />
+              <p className="text-xs font-black text-slate-600 uppercase tracking-[0.3em]">System Standby - Select Node</p>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Right Side */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Score + Chart */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="md:col-span-1 bg-slate-900/80 p-6 rounded-3xl border border-slate-800 flex flex-col items-center justify-center">
-              <p className="text-[10px] font-black text-slate-500 uppercase">Health Score</p>
-              <h2 className={`text-5xl font-black mt-2 ${results.compliance_score > 70 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {results.compliance_score}%
-              </h2>
-              <div className="mt-3 text-xs font-bold text-slate-400 flex items-center gap-1">
-                <CheckCircle size={14} className="text-emerald-500" /> Secure
-              </div>
-            </div>
-
-            <div className="md:col-span-3 bg-slate-900/80 p-6 rounded-3xl border border-slate-800">
-              <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                <BarChart3 size={16} /> Risk Distribution
-              </h3>
-              <div className="h-52">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="name" tick={{ fill: '#94a3b8' }} />
-                    <YAxis tick={{ fill: '#64748b' }} />
-                    <Tooltip />
-                    <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                      {chartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+      {/* Unauthorized Device Alert Panel */}
+      {newDevices.length > 0 && (
+        <div className="fixed bottom-8 right-8 bg-red-950 border border-red-500 p-8 rounded-[2.5rem] shadow-2xl shadow-red-900/40 max-w-sm z-50 animate-bounce-subtle">
+          <div className="flex items-center gap-3 mb-6 text-red-500">
+            <AlertTriangle size={28} className="animate-pulse" />
+            <h3 className="font-black text-sm uppercase tracking-widest">Intrusion Alert</h3>
           </div>
-
-          {/* AI Insight */}
-          <div className="bg-gradient-to-br from-cyan-900/20 to-slate-900/50 p-6 rounded-3xl border border-cyan-500/30">
-            <h3 className="flex items-center gap-2 font-black text-cyan-400 mb-3 uppercase text-xs tracking-widest">
-              <FileText size={16} /> AI Security Insight
-            </h3>
-            <p className="text-slate-300 italic leading-relaxed">"{results.ai_analysis}"</p>
-          </div>
-
-          {/* Violations List */}
           <div className="space-y-4">
-            {results.violations.length === 0 ? (
-              <div className="bg-emerald-900/20 border border-emerald-500/30 p-8 rounded-3xl text-center">
-                <CheckCircle size={48} className="mx-auto text-emerald-500 mb-4" />
-                <p className="text-emerald-400 font-bold text-lg">No violations found</p>
-                <p className="text-slate-500 mt-1">System is clean and compliant</p>
-              </div>
-            ) : (
-              results.violations.map((v, i) => (
-                <div
-                  key={i}
-                  className={`p-5 rounded-2xl border flex flex-col md:flex-row justify-between gap-4 transition-all hover:scale-[1.01] ${getSeverityStyle(v.severity)}`}
-                >
-                  <div className="flex gap-4">
-                    {getSeverityIcon(v.severity)}
-                    <div>
-                      <div className="font-bold text-lg">{v.title}</div>
-                      <div className="text-sm opacity-90 mt-1">{v.description}</div>
-                      {v.port && <div className="text-xs mt-2 opacity-75">Port: {v.port} • Service: {v.service}</div>}
-                    </div>
-                  </div>
-
+            {newDevices.map((d, i) => (
+              <div key={i} className="bg-black/40 p-5 rounded-2xl border border-red-900/30">
+                <div className="text-xs font-mono text-red-400 font-bold mb-1">{d.ip}</div>
+                <div className="text-[10px] text-slate-500 font-mono">{d.mac || 'MAC unknown'}</div>
+                <div className="flex gap-2 mt-4">
                   <button
-                    onClick={() => handleRemediate(v)}
-                    className="bg-white/10 hover:bg-white/20 px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest border border-white/10 transition-all whitespace-nowrap"
+                    onClick={() => {
+                      // Block logic (tum yahan actual block API call daal sakte ho)
+                      alert(`Blocked: ${d.ip}`);
+                      setNewDevices(prev => prev.filter(item => item.ip !== d.ip));
+                    }}
+                    className="flex-1 bg-red-600 hover:bg-red-500 text-[9px] font-black py-2 rounded-lg transition-all"
                   >
-                    FIX NOW
+                    ISOLATE
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Approve / Add to baseline
+                      alert(`Approved: ${d.ip}`);
+                      setNewDevices(prev => prev.filter(item => item.ip !== d.ip));
+                    }}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-[9px] font-black py-2 rounded-lg transition-all"
+                  >
+                    APPROVE
                   </button>
                 </div>
-              ))
-            )}
+              </div>
+            ))}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

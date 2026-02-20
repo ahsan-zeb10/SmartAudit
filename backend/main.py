@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import asyncio
@@ -6,14 +6,16 @@ import uvicorn
 import os
 import subprocess
 import shutil
+import psutil
+import time
 
-# Project Imports
+# Custom Modules
 from scanner import run_security_audit, discover_assets
 from ai_engine import get_ai_summary
-from database import init_db, SessionLocal
-from report_gen import generate_pdf_report  # ← Ensure yeh file exist karti hai
+from database import init_db
+from report_gen import generate_pdf_report
 
-app = FastAPI(title="TECHIFY Infrastructure Platform")
+app = FastAPI(title="Techify Smart Audit Platform")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,53 +33,42 @@ LATEST_REPORT = {
     "assets": [],
     "compliance_score": 100
 }
-
+all_devices_results = {}
 CURRENT_TARGET = {"host": "127.0.0.1"}
 update_event = asyncio.Event()
+approved_devices = set() 
 
-async def perform_audit():
-    global LATEST_REPORT
+def calculate_score(violations):
+    score = 100
+    penalty = 0
+    weights = {"Critical": 20, "High": 15, "Medium": 10, "Low": 5}
+    for v in violations:
+        penalty += weights.get(v.get('severity'), 5)
+    return max(0, score - penalty)
+
+async def perform_audit(host=None):
+    global LATEST_REPORT, all_devices_results
+    target = host or CURRENT_TARGET["host"]
     try:
-        host = CURRENT_TARGET["host"]
-        print(f"🔍 Starting Deep Audit: {host}")
-
-        violations = run_security_audit(host)
-
-        # --- Corrected Indentation Starts Here ---
-        score = 100
-        critical_count = 0
-        high_count = 0
-        
-        for v in violations:
-            sev = v.get('severity', 'Low')
-            if sev == "Critical":
-                critical_count += 1
-                score -= 25  # Kam cut Critical ke liye
-            elif sev == "High": 
-                score -= 15
-            elif sev == "Medium": 
-                score -= 8
-            else: 
-                score -= 4
-
-        # Bonus: Agar Critical > 0 toh extra penalty
-        if critical_count > 0:
-            score -= 10 * critical_count  # Multiple Critical pe heavy hit
-
-        score = max(10, score)  # Minimum 10%
-        # --- Corrected Indentation Ends Here ---
-
+        violations = run_security_audit(target)
+        score = calculate_score(violations)
         ai_text = get_ai_summary(violations)
-
-        LATEST_REPORT.update({
-            "host": host,
+        
+        report_data = {
+            "host": target,
             "violations": violations,
             "ai_analysis": ai_text,
-            "compliance_score": int(score)
-        })
-        print(f"✅ Audit Complete → {len(violations)} violations | Score: {score}%")
+            "compliance_score": score,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        all_devices_results[target] = report_data
+        if target == CURRENT_TARGET["host"]:
+            LATEST_REPORT.update(report_data)
+        return report_data
     except Exception as e:
-        print(f"❌ Audit Error: {e}")
+        print(f"Error: {e}")
+        return None
 
 @app.on_event("startup")
 async def startup_event():
@@ -103,77 +94,57 @@ async def start_scan(data: dict, background_tasks: BackgroundTasks):
     CURRENT_TARGET["host"] = data.get("host", "127.0.0.1")
     update_event.set()
     background_tasks.add_task(perform_audit)
-    return {"message": "Audit Triggered"}
-
-@app.post("/remediate")
-async def remediate_issue(data: dict, background_tasks: BackgroundTasks):
-    violation = data.get("violation", {})
-    host = data.get("host", LATEST_REPORT.get("host", "127.0.0.1"))
-    title = violation.get("title", "").upper() if isinstance(violation, dict) else ""
-    id_val = violation.get("id", "") if isinstance(violation, dict) else ""
-    port = violation.get("port") if isinstance(violation, dict) else None
-    actions = []
-    is_local = host in ["127.0.0.1", "localhost", "::1"]
-
-    try:
-        if is_local:
-            if "DISK" in title or "POLICY-13-DISK" in id_val:
-                temp_dir = os.path.expandvars(r'%TEMP%')
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                os.makedirs(temp_dir, exist_ok=True)
-                actions.append("Temp cleared")
-
-                subprocess.run('powershell -Command "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"', shell=True)
-                actions.append("Recycle Bin emptied")
-
-            if port:
-                rule_name = f"TECHIFY_BLOCK_{port}"
-                subprocess.run(f'netsh advfirewall firewall delete rule name="{rule_name}"', shell=True)
-                subprocess.run(f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block protocol=TCP localport={port}', shell=True)
-                actions.append(f"Port {port} blocked")
-
-                if port == 445:
-                    subprocess.run('powershell -Command "Stop-Service -Name LanmanServer -Force"', shell=True)
-                    actions.append("SMB stopped")
-                elif port == 22:
-                    subprocess.run('powershell -Command "Stop-Service -Name sshd -Force"', shell=True)
-                    actions.append("SSH stopped")
-                elif port == 5432:
-                    subprocess.run('powershell -Command "Stop-Service -Name postgresql* -Force"', shell=True)
-                    actions.append("PostgreSQL stopped")
-
-            if actions:
-                msg = f"SUCCESS (Local): {', '.join(actions)}. Re-scan."
-            else:
-                msg = "No auto fix (local)"
-        else:
-            suggestions = []
-            if port:
-                suggestions.append(f"netsh advfirewall firewall add rule name=\"BLOCK_{port}\" dir=in action=block protocol=TCP localport={port}")
-            if "DISK" in title:
-                suggestions.append("Manual cleanup temp/recycle bin on remote")
-            msg = f"REMOTE HOST: Manual fix needed → Commands: {'; '.join(suggestions)}"
-
-    except Exception as e:
-        msg = f"FAILED: Run as Administrator → {str(e)[:50]}"
-
-    update_event.set()
-    background_tasks.add_task(perform_audit)
-    return {"message": msg}
+    return {"message": "Audit Started"}
 
 @app.post("/discover")
 async def start_discovery(data: dict):
     found = discover_assets(data.get("range", "192.168.1.1/24"))
-    LATEST_REPORT["assets"] = found
-    return {"status": "success", "devices": found}
+    new_devices = []
+    for device in found:
+        ip, mac = device.get('ip'), device.get('mac', 'unknown')
+        if (ip, mac) not in approved_devices:
+            new_devices.append(device)
+        await perform_audit(ip)
+    return {"devices": found, "all_results": all_devices_results, "new_devices": new_devices}
+
+@app.post("/remediate")
+async def remediate_issue(data: dict, background_tasks: BackgroundTasks):
+    violation = data.get("violation", {})
+    host = data.get("host", "127.0.0.1")
+    title = violation.get("title", "").upper()
+    port = violation.get("port")
+    actions = []
+    
+    if host in ["127.0.0.1", "localhost"]:
+        if "DISK" in title:
+            shutil.rmtree(os.path.expandvars(r'%TEMP%'), ignore_errors=True)
+            actions.append("Disk Cleaned")
+        if port:
+            subprocess.run(f'netsh advfirewall firewall add rule name="BLOCK_{port}" dir=in action=block protocol=TCP localport={port}', shell=True)
+            actions.append(f"Port {port} Blocked")
+    
+    update_event.set()
+    return {"message": f"Remediation Applied: {', '.join(actions)}"}
+
+@app.get("/live-stats/{host}")
+async def get_live_stats(host: str):
+    return {
+        "cpu_percent": psutil.cpu_percent(),
+        "ram_percent": psutil.virtual_memory().percent,
+        "disk_percent": psutil.disk_usage('/').percent
+    }
 
 @app.get("/download-report")
-async def download_report():
-    try:
-        filename = generate_pdf_report(LATEST_REPORT)
-        return FileResponse(filename, media_type='application/pdf', filename="TECHIFY_Compliance_Report.pdf")
-    except Exception as e:
-        return {"error": f"Report generation failed: {str(e)}"}
-
+async def download_report(host: str = Query(...)):
+    report = all_devices_results.get(host)
+    if not report:
+        return {"error": "No audit data found for this host. Please run audit first."}
+    
+    pdf_path = generate_pdf_report(report)
+    return FileResponse(
+        pdf_path,
+        media_type='application/pdf',
+        filename=f"TECHIFY_Smart_Audit_Report_{host}.pdf"
+    )
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

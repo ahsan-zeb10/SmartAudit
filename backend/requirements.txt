@@ -1,1 +1,19 @@
-psycopg2-binary
+# Web Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+
+# Security & Infrastructure
+scapy==2.5.0
+psutil==5.9.6
+python-nmap==0.7.1
+
+# AI & Data
+openai==1.3.5
+python-dotenv==1.0.0
+
+# PDF Generation (Fixing the Report Issue)
+reportlab==4.0.7
+
+# Utilities
+requests==2.31.0
+aiohttp==3.9.1

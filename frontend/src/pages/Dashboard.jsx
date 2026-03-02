@@ -360,16 +360,18 @@ const Dashboard = () => {
                       )}
                       <div className="flex items-center gap-2">
                         <span className="text-slate-500 text-xs w-14 flex-shrink-0">OS</span>
-                        <span className="text-white text-sm flex items-center gap-1.5">
+                        <span className="text-white text-sm flex items-center gap-1.5 flex-wrap">
                           {activeDeviceInfo.os_name && activeDeviceInfo.os_name !== 'Unknown'
-                            ? activeDeviceInfo.os_name
-                            : <span className="text-slate-500 italic">Not detected</span>
+                            ? activeDeviceInfo.os_name.replace(' (vendor-based)', '')
+                            : <span className="text-slate-500 italic">Not detected (needs admin privileges)</span>
                           }
                           {activeDeviceInfo.os_accuracy > 0 && (
-                            <span className="text-slate-500 text-xs">({activeDeviceInfo.os_accuracy}%)</span>
+                            <span className="text-slate-500 text-xs">({activeDeviceInfo.os_accuracy}% confidence)</span>
                           )}
-                          {activeDeviceInfo.os_name?.includes('vendor-based') && (
-                            <span className="text-yellow-500 text-xs">(estimated)</span>
+                          {activeDeviceInfo.detection_src && activeDeviceInfo.detection_src !== 'unknown' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400 border border-slate-600/30">
+                              via {activeDeviceInfo.detection_src}
+                            </span>
                           )}
                         </span>
                       </div>

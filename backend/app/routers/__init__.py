@@ -1,0 +1,1 @@
+from app.routers import auth_router, scan_router, device_router, dashboard_router

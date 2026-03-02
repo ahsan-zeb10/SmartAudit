@@ -19,8 +19,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as
 os.environ['PATH'] += r';C:\Program Files (x86)\Nmap'
 os.environ['PATH'] += r';C:\Program Files\Nmap'
 
+# ─────────────────────────────────────────────────────────────────────────────
 # MAC OUI DATABASE — first 8 chars of MAC → device info
 # Extended local DB so no internet needed
+# ─────────────────────────────────────────────────────────────────────────────
 MAC_OUI_DB = {
     # D-Link
     "00:05:5D": ("D-Link", "Router", "🔌", "D-Link Router OS"),
@@ -585,6 +587,7 @@ def try_netbios_name(ip: str, timeout: float = 1.5) -> str:
         data, _ = s.recvfrom(1024)
         s.close()
         if len(data) > 56:
+            # Parse names from response
             num_names = data[56]
             names = []
             for i in range(num_names):
@@ -826,6 +829,7 @@ def discover_assets(ip_range: str):
             "vendor":        vendor if vendor != "N/A" else enriched.get("device_name", "Unknown"),
             "status":        "Online",
             "os_name":       enriched["os_name"],
+            "os_accuracy":   enriched["os_accuracy"],
             "device_type":   enriched["device_type"],
             "device_icon":   enriched["device_icon"],
             "open_ports":    open_ports[:12],

@@ -82,6 +82,8 @@ export const ScanPanel = ({ onScanComplete, onDevicesDiscovered }) => {
   };
 
 const handleDiscovery = async () => {
+  console.log("DISCOVER BUTTON CLICKED! Range:", networkRange);
+  console.log("Sending POST to /discover...")
   const trimmedRange = networkRange.trim();
   console.log("[FRONTEND] Discover clicked with range:", trimmedRange);
   

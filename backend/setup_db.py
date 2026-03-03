@@ -17,7 +17,7 @@ users_to_create = [
     ("viewer@techify.local",  "viewer",  "Viewer@123",  RoleEnum.viewer,  "Viewer"),
 ]
 
-for email, username, password, role, name in users_to_create:
+for em ail, username, password, role, name in users_to_create:
     if not db.query(User).filter(User.username == username).first():
         db.add(User(
             email=email,
